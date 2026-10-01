@@ -232,7 +232,7 @@ function writeProfilePatches(profileDir) {
       '  config:',
       '    provider: deepseek-official',
       '    model: Qwen3.6-35B',
-      '- id: "@deepseek-ai/cordis-plugin-hmr"',
+      '- id: hmr',
       '  disabled: true',
       '',
     ].join('\n'),
