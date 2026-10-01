@@ -5,9 +5,9 @@
 // `node scripts/verify-runtime.check.mjs` (also wired into `npm test`).
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { delimiter, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { classifySpec, detectPluginStructure, diagnoseBootLog, hasNonTransportError, isWebPlugin, listKeyFor } from './verify-runtime.mjs'
 
@@ -222,6 +222,55 @@ function cliCheck(scriptPath) {
   }
 }
 
+function generatedModelCatalogCheck(scriptPath) {
+  // Exercise the public CLI, but stop at installation: no real DSH, npm,
+  // plugin code or model request is run by this offline regression check.
+  const root = mkdtempSync(join(tmpdir(), 'verify-catalog-check-'))
+  try {
+    const bin = join(root, 'bin')
+    const plugin = join(root, 'plugin')
+    const callsPath = join(root, 'calls.jsonl')
+    mkdirSync(bin)
+    mkdirSync(plugin)
+    writeFileSync(join(plugin, 'package.json'), '{"name":"verify-catalog-fixture"}')
+    writeFileSync(join(bin, 'dsh'), `#!${process.execPath}
+const { appendFileSync } = require('node:fs')
+const args = process.argv.slice(2)
+appendFileSync(${JSON.stringify(callsPath)}, JSON.stringify(args) + '\\n')
+if (args.length === 1 && args[0] === '--version') process.exit(0)
+console.error('fixture: stop after profile generation')
+process.exit(47)
+`, { mode: 0o755 })
+
+    const profile = 'verify-catalog'
+    const child = spawnSync(process.execPath, [scriptPath, plugin, '--profile', profile, '--json', '--keep-workspace'], {
+      encoding: 'utf8',
+      timeout: 30_000,
+      env: { ...process.env, TMPDIR: root, PATH: `${bin}${delimiter}${process.env.PATH ?? ''}` },
+    })
+    const result = JSON.parse(child.stdout)
+    const workspace = result.workspace
+    assert.equal(child.status, 1, 'fixture stops at installation, before boot')
+    assert.equal(result.verdict, 'install-failed')
+    assert.match(result.evidence, /fixture: stop after profile generation/)
+    const calls = readFileSync(callsPath, 'utf8').trim().split('\n').map((line) => JSON.parse(line))
+    assert.deepEqual(calls, [['--version'], ['plugin', '--profile', profile, 'add', join(workspace, 'plugin-src')]])
+
+    const patch = readFileSync(join(workspace, '.dsh', 'profiles', profile, 'cordis.patch.yml'), 'utf8')
+    // The stock base bundle mounts @deepseek-ai/dsh-llm-deepseek with this
+    // entry id. A patch to the invented llm-verify id is skipped after warning.
+    // Source: deepseek-ai/deepseek-harness, dsh-v0.1.7-rc.1,
+    // packages/bundle/base/cordis.patch.yml.
+    assert.match(patch, /^- id: llm-deepseek\n  config:\n    models:\n      - id: Qwen3\.6-35B\n        contextWindow: 262144\n        maxTokens: 8192$/m,
+      'the probe model must be configured on the actual DeepSeek adapter entry')
+    assert.match(patch, /^- id: agent-default-model\n  config:\n    provider: deepseek-official\n    model: Qwen3\.6-35B$/m,
+      'the selected default model must match the configured catalog')
+    assert.doesNotMatch(patch, /^- id: llm-verify$/m)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+}
+
 const isMain = (() => {
   try {
     return realpathSync(process.argv[1] ?? '') === realpathSync(fileURLToPath(import.meta.url))
@@ -233,5 +282,6 @@ const isMain = (() => {
 if (isMain) {
   runVerifyRuntimeChecks()
   cliCheck(join(here, 'verify-runtime.mjs'))
+  generatedModelCatalogCheck(join(here, 'verify-runtime.mjs'))
   console.log('verify-runtime.check: all assertions passed')
 }
