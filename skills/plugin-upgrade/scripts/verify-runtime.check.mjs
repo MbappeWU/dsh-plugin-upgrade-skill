@@ -240,10 +240,10 @@ function cliCheck(scriptPath) {
     assert.equal(result.status, 1, 'fixture installer stops before any model request')
     assert.equal(JSON.parse(result.stdout).verdict, 'install-failed')
     const yaml = readFileSync(captured, 'utf8')
-    const provider = /- id: llm-deepseek\n([\s\S]*?)(?=\n- id:|$)/.exec(yaml)?.[1]
-    assert(provider, 'generated profile must target the existing DeepSeek provider entry')
-    assert.match(provider, /models:\n\s+- id: Qwen3\.6-35B\n/)
-    assert.match(yaml, /- id: agent-default-model\n\s+config:\n\s+provider: deepseek-official\n\s+model: Qwen3\.6-35B/)
+    assert.match(yaml, /^- id: llm-deepseek\n  config:\n    models:\n      - id: Qwen3\.6-35B\n        contextWindow: 262144\n        maxTokens: 8192$/m,
+      'the actual DeepSeek provider entry must contain the probe model and its context and output limits')
+    assert.match(yaml, /^- id: agent-default-model\n  config:\n    provider: deepseek-official\n    model: Qwen3\.6-35B$/m)
+    assert.doesNotMatch(yaml, /^- id: llm-verify$/m, 'the obsolete provider entry must not remain alongside the real entry')
     assert.match(yaml, /- id: hmr\n\s+disabled: true/, 'generated profile disables the stock HMR entry')
   } finally {
     rmSync(root, { recursive: true, force: true })
