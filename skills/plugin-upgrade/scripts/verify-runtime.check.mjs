@@ -5,7 +5,7 @@
 // `node scripts/verify-runtime.check.mjs` (also wired into `npm test`).
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -219,6 +219,34 @@ function cliCheck(scriptPath) {
     const bad = run(args)
     assert.equal(bad.status, 2, `usage error exits 2: ${args.join(' ')}`)
     assert.match(bad.stderr, /verify-runtime:|Usage:/, `usage error is explained: ${args.join(' ')}`)
+  }
+
+  const root = mkdtempSync(join(tmpdir(), 'verify-model-check-'))
+  try {
+    const bin = join(root, 'bin')
+    const plugin = join(root, 'plugin')
+    const captured = join(root, 'profile.yml')
+    mkdirSync(bin)
+    mkdirSync(plugin)
+    writeFileSync(join(plugin, 'package.json'), '{"name":"@demo/model-check","version":"1.0.0"}')
+    const dsh = join(bin, 'dsh')
+    writeFileSync(dsh, '#!/bin/sh\nif [ "$1" = "--version" ]; then echo fixture-only; exit 0; fi\ncp "$DSH_HOME/profiles/verify/cordis.patch.yml" "$VERIFY_MODEL_CAPTURE"\nexit 1\n')
+    chmodSync(dsh, 0o755)
+    const result = spawnSync(process.execPath, [scriptPath, plugin, '--json'], {
+      env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, VERIFY_MODEL_CAPTURE: captured },
+      encoding: 'utf8',
+      timeout: 30_000,
+    })
+    assert.equal(result.status, 1, 'fixture installer stops before any model request')
+    assert.equal(JSON.parse(result.stdout).verdict, 'install-failed')
+    const yaml = readFileSync(captured, 'utf8')
+    const provider = /- id: llm-deepseek\n([\s\S]*?)(?=\n- id:|$)/.exec(yaml)?.[1]
+    assert(provider, 'generated profile must target the existing DeepSeek provider entry')
+    assert.match(provider, /models:\n\s+- id: Qwen3\.6-35B\n/)
+    assert.match(yaml, /- id: agent-default-model\n\s+config:\n\s+provider: deepseek-official\n\s+model: Qwen3\.6-35B/)
+    assert.match(yaml, /- id: hmr\n\s+disabled: true/, 'generated profile disables the stock HMR entry')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
   }
 }
 
