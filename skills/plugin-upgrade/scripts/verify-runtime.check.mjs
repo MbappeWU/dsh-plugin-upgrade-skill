@@ -9,7 +9,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSy
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { classifySpec, detectPluginStructure, diagnoseBootLog, findPackageFromExecutable, hasNonTransportError, isWebPlugin } from './verify-runtime.mjs'
+import { classifySpec, detectPluginStructure, diagnoseBootLog, findCliPackageRoot, findPackageFromExecutable, hasNonTransportError, isWebPlugin } from './verify-runtime.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 
@@ -173,20 +173,31 @@ export function runVerifyRuntimeChecks() {
     assert.equal(detectPluginStructure(emptyDir), null)
     assert.equal(detectPluginStructure(join(root, 'no-such-dir')), null)
 
-    // A supported same-name collision must be surfaced from the actual CLI
-    // installation ancestry; profile identity alone cannot prove bundle load.
+    // A supported same-name collision must be surfaced from the official CLI
+    // package root; incidental bin/lib/node_modules must be ignored.
     const cliRoot = join(root, 'cli')
     const cliBin = join(cliRoot, 'node_modules', '@deepseek-ai', 'dsh', 'lib')
     const cliBundle = join(cliRoot, 'node_modules', '@deepseek-ai', 'dsh-headless')
     mkdirSync(cliBin, { recursive: true })
     mkdirSync(cliBundle, { recursive: true })
     writeFileSync(join(cliBin, 'bin.js'), '')
+    writeFileSync(join(cliRoot, 'node_modules', '@deepseek-ai', 'dsh', 'package.json'), '{"name":"@deepseek-ai/dsh"}')
+    const phantomBundle = join(cliBin, 'node_modules', '@deepseek-ai', 'dsh-headless')
+    mkdirSync(phantomBundle, { recursive: true })
+    writeFileSync(join(phantomBundle, 'package.json'), '{"name":"@deepseek-ai/dsh-headless","version":"phantom"}')
     writeFileSync(join(cliBundle, 'package.json'), '{"name":"@deepseek-ai/dsh-headless"}')
     assert.equal(
       findPackageFromExecutable('@deepseek-ai/dsh-headless', join(cliBin, 'bin.js')),
       realpathSync(cliBundle),
       'same-name CLI installation bundle is detected from the target executable ancestry',
     )
+    const shimRoot = join(root, 'shim')
+    const shimBin = join(shimRoot, 'bin')
+    mkdirSync(shimBin, { recursive: true })
+    writeFileSync(join(shimBin, 'dsh'), '')
+    writeFileSync(join(shimRoot, 'package.json'), '{"name":"unrelated-shim"}')
+    assert.equal(findCliPackageRoot(join(shimBin, 'dsh')), null, 'unidentified shim anchor stays unknown')
+    assert.equal(findPackageFromExecutable('@deepseek-ai/dsh-headless', join(shimBin, 'dsh')), null, 'unknown shim cannot prove bundle ownership')
 
     // A bare directory name with no slash must also resolve as a directory
     // (fleet-caught: "demo-old" was once mistaken for an npm name and 404'd).
@@ -233,6 +244,7 @@ function cliCheck(scriptPath) {
     const captured = join(root, 'profile.yml')
     mkdirSync(bin)
     mkdirSync(plugin)
+    writeFileSync(join(root, 'package.json'), JSON.stringify({ name: '@deepseek-ai/dsh', version: '0.2.1-alpha.1-fixture' }))
     writeFileSync(join(plugin, 'package.json'), '{"name":"@demo/model-check","version":"1.0.0"}')
     const dsh = join(bin, 'dsh')
     writeFileSync(dsh, `#!/usr/bin/env node
@@ -275,6 +287,7 @@ function pipelineCheck(scriptPath) {
     const log = join(root, 'commands.jsonl')
     mkdirSync(bin)
     mkdirSync(plugin)
+    writeFileSync(join(root, 'package.json'), JSON.stringify({ name: '@deepseek-ai/dsh', version: '0.2.1-alpha.1-fixture' }))
     writeFileSync(join(plugin, 'package.json'), JSON.stringify({ name: '@demo/source-check', private: true, dsh: { bundle: { patch: './cordis.patch.yml' } } }))
     writeFileSync(join(plugin, 'cordis.patch.yml'), '[]\n')
     const before = readFileSync(join(plugin, 'package.json'), 'utf8')
@@ -348,6 +361,7 @@ console.error('TRANSPORT ECONNREFUSED 127.0.0.1:9'); process.exit(1);
     chmodSync(npm, 0o755)
     const run = (spec, mode, extra = []) => {
       writeFileSync(log, '')
+      writeFileSync(join(root, 'package.json'), JSON.stringify({ name: mode === 'wrong-anchor' ? '@demo/wrapper' : '@deepseek-ai/dsh', version: '0.2.1-alpha.1-fixture' }))
       const child = spawnSync(process.execPath, [scriptPath, spec, '--json', ...extra], {
         env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, VERIFY_FIXTURE_MODE: mode, VERIFY_FIXTURE_LOG: log },
         encoding: 'utf8', timeout: 30_000,
@@ -360,6 +374,9 @@ console.error('TRANSPORT ECONNREFUSED 127.0.0.1:9'); process.exit(1);
       }
       return { child, result, commands }
     }
+    const unknownAnchor = run(plugin, 'wrong-anchor')
+    assert.equal(unknownAnchor.child.status, 2, 'unidentified CLI anchor remains inconclusive')
+    assert.equal(unknownAnchor.result.verdict, 'bundle-resolution-anchor-unproven')
     for (const [spec, mode, extra] of [[plugin, 'valid', []], [plugin, 'valid', ['--profile', 'custom-check']], [plugin, 'valid', ['--profile', 'headless']], ['@demo/npm-package', 'valid', []], ['https://github.com/demo/repository.git', 'valid', []], ['git+https://github.com/demo/repository.git', 'valid', []]]) {
       const { child, result, commands } = run(spec, mode, extra)
       assert.equal(child.status, 0, `${spec}: complete pipeline passes`)
@@ -405,7 +422,7 @@ console.error('TRANSPORT ECONNREFUSED 127.0.0.1:9'); process.exit(1);
       'Git installation may resolve into a shared store outside the profile')
     assert.equal(run('https://github.com/demo/repository.git#requested', 'wrong-git-ref').result.verdict, 'not-listed-after-install',
       'allowing external stores must retain requested Git ref validation')
-    const collision = join(bin, 'node_modules', '@demo', 'source-check')
+    const collision = join(root, 'node_modules', '@demo', 'source-check')
     mkdirSync(collision, { recursive: true })
     writeFileSync(join(collision, 'package.json'), before)
     const shadow = run(plugin, 'valid')

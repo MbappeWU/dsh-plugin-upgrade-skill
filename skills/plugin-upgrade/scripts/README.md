@@ -31,12 +31,16 @@ pnpm can omit linked packages. The verifier checks the direct dependency,
 materialized package name, registry pin when available, and local source link.
 The native profile must already include the declared bundle. A missing package,
 broken or unrelated link, wrong version, or unenabled dependency stops the
-check before boot. If the same bundle name also exists in the target CLI's
-installation ancestry, the verifier records both real paths and returns
-`bundle-resolution-shadow` / `inconclusive`: the public CLI does not expose the
-resolved bundle directory, so profile identity cannot prove which copy supplied
-the loaded patch. This intentionally includes first-party bundles already shipped
-with the CLI: their profile-local replacement cannot be verified by this probe.
+check before boot. The verifier first locates the official `@deepseek-ai/dsh`
+package root from the executable, then uses Node's resolver from that root. If
+the same bundle name resolves to a different canonical owner than the profile
+candidate, it records both paths and returns `bundle-resolution-shadow` /
+`inconclusive`. A same-name package under incidental `bin/lib/node_modules` is
+ignored. If the official anchor cannot be located, it returns
+`bundle-resolution-anchor-unproven` / `inconclusive` rather than claiming a
+profile-only load. This keeps first-party installation-first behavior safe: a
+profile-local replacement cannot be verified as loaded when the official owner
+wins.
 The [0.2.1-alpha.1 bundle resolver](https://github.com/deepseek-ai/deepseek-harness/blob/dsh-v0.2.1-alpha.1/packages/boot/app-boot/src/profile.ts#L694-L712)
 explicitly prefers the installation for in-box bundles. A collision is an
 unverified candidate, not a plugin failure; use a separate host installation

@@ -22,6 +22,7 @@
 // only for git-URL / npm-name specs).
 
 import { spawnSync } from 'node:child_process'
+import { createRequire } from 'node:module'
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -160,17 +161,18 @@ export function classifySpec(spec) {
   return 'unknown'
 }
 
-/** Locate a package with the requested name in the actual dsh executable's
- * node_modules ancestry. This is only a collision signal: the public CLI does
- * not expose its bundle loader's resolved path, so a different profile copy
- * cannot honestly be called the loaded bundle. */
-export function findPackageFromExecutable(name, executablePath) {
+/** Find the actual official dsh package root for an executable. The loader's
+ * INSTALL_ANCHOR is the package root package.json, not an arbitrary bin/lib
+ * directory that happens to contain node_modules. */
+export function findCliPackageRoot(executablePath) {
   try {
     let cursor = dirname(realpathSync(executablePath))
-    const parts = name.split('/')
-    for (let i = 0; i < 8; i += 1) {
-      const candidate = join(cursor, 'node_modules', ...parts)
-      if (existsSync(join(candidate, 'package.json')) && statSync(candidate).isDirectory()) return realpathSync(candidate)
+    for (let i = 0; i < 12; i += 1) {
+      const manifestPath = join(cursor, 'package.json')
+      if (existsSync(manifestPath)) {
+        const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
+        if (manifest?.name === '@deepseek-ai/dsh') return cursor
+      }
       const parent = dirname(cursor)
       if (parent === cursor) break
       cursor = parent
@@ -178,6 +180,38 @@ export function findPackageFromExecutable(name, executablePath) {
     return null
   } catch {
     return null
+  }
+}
+
+/** Locate a package using Node's actual resolution paths from the official
+ * dsh package root. A same-name directory elsewhere in executable ancestry is
+ * incidental and must not trigger the shadow gate. */
+export function findPackageFromExecutable(name, executablePath) {
+  try {
+    const packageRoot = findCliPackageRoot(executablePath)
+    if (!packageRoot) return null
+    const requireFromAnchor = createRequire(join(packageRoot, 'package.json'))
+    const searchPaths = requireFromAnchor.resolve.paths(name) ?? []
+    const parts = name.split('/')
+    for (const searchPath of searchPaths) {
+      const candidate = join(searchPath, ...parts)
+      if (existsSync(join(candidate, 'package.json')) && statSync(candidate).isDirectory()) return realpathSync(candidate)
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
+function findCliResolution(name) {
+  try {
+    const which = run('which', ['dsh'], { timeoutSeconds: 10 })
+    if (which.status !== 0) return { anchor: null, directory: null }
+    const executable = which.stdout.trim()
+    const anchor = findCliPackageRoot(executable)
+    return { anchor, directory: anchor ? findPackageFromExecutable(name, executable) : null }
+  } catch {
+    return { anchor: null, directory: null }
   }
 }
 
@@ -326,14 +360,19 @@ function installedPlugin(profileDir, route, spec, originalSpec, pin = {}) {
     if (!Array.isArray(bundles)) return { error: 'profile has no bundle list' }
     if (!bundles.includes(name)) return { error: 'installed bundle is not enabled in the native profile' }
     const candidateDirectory = realpathSync(directory)
-    const cliPackageDirectory = findCliPackageDirectory(name)
+    const cliResolution = findCliResolution(name)
+    const cliPackageDirectory = cliResolution.directory
     return {
       name,
       version: pkg.version,
       web: pkg?.dsh?.client?.platform === 'web',
       candidateDirectory,
       cliPackageDirectory,
-      bundleResolution: cliPackageDirectory && cliPackageDirectory !== candidateDirectory ? 'inconclusive-collision' : 'candidate-only-or-same-path',
+      bundleResolution: !cliResolution.anchor
+        ? 'inconclusive-anchor'
+        : cliPackageDirectory && cliPackageDirectory !== candidateDirectory
+          ? 'inconclusive-collision'
+          : 'candidate-only-or-same-path',
     }
   } catch {
     return { error: 'installed package metadata or link is unreadable' }
@@ -550,6 +589,15 @@ export async function verifyRuntime(rawSpec, options = {}) {
     }
     result.installation = { name: installed.name, version: installed.version }
     webPlugin = installed.web
+
+    if (installed.bundleResolution === 'inconclusive-anchor') {
+      result.status = 'inconclusive'
+      result.verdict = 'bundle-resolution-anchor-unproven'
+      result.attribution = 'dependency-resolution'
+      result.evidence = 'the official @deepseek-ai/dsh package root could not be located from the dsh executable; selected bundle ownership is unproven'
+      stage('l3-bundle-resolution', false, 0, result.evidence)
+      return result
+    }
 
     // dsh 0.1.7 resolves selected bundle names from its installation anchor
     // before the profile. When both paths exist, the public CLI gives us no
