@@ -9,7 +9,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSy
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { classifySpec, detectPluginStructure, diagnoseBootLog, findPackageFromExecutable, hasNonTransportError, isWebPlugin, listKeyFor } from './verify-runtime.mjs'
+import { classifySpec, detectPluginStructure, diagnoseBootLog, findPackageFromExecutable, hasNonTransportError, isWebPlugin } from './verify-runtime.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 
@@ -139,7 +139,7 @@ export function runVerifyRuntimeChecks() {
   assert.equal(classifySpec('no-such-dir/nor-npm'), 'unknown')
   assert.equal(classifySpec('not a spec!!'), 'unknown')
 
-  // --- detectPluginStructure / isWebPlugin / listKeyFor (temp dirs) ------------
+  // --- detectPluginStructure / isWebPlugin (temp dirs) -----------------------
 
   const root = mkdtempSync(join(tmpdir(), 'verify-check-'))
   try {
@@ -148,20 +148,11 @@ export function runVerifyRuntimeChecks() {
     writeFileSync(join(pkgDir, 'package.json'), '{"name":"@demo/pkg"}')
     assert.equal(detectPluginStructure(pkgDir), 'package.json')
     assert.equal(isWebPlugin(pkgDir), false)
-    assert.equal(listKeyFor(pkgDir, 'directory'), '@demo/pkg')
-    // Corrupted package.json falls back to the ORIGINAL directory name, never
-    // the temp copy name (which is always plugin-src).
+    // Unreadable metadata cannot classify a web plugin.
     const brokenDir = join(root, 'broken-pkg')
     mkdirSync(brokenDir)
     writeFileSync(join(brokenDir, 'package.json'), 'not-json{')
-    assert.equal(listKeyFor(join(root, 'copy-dest'), 'directory', brokenDir), 'broken-pkg')
     assert.equal(isWebPlugin(brokenDir), false)
-
-    // git-url keys are repo names without .git, never the full URL.
-    assert.equal(listKeyFor('https://github.com/user/plugin.git', 'git-url'), 'plugin')
-    assert.equal(listKeyFor('git@github.com:user/plugin.git', 'git-url'), 'plugin')
-    // npm-name keys are the package name itself.
-    assert.equal(listKeyFor('@demo/pkg', 'npm-name'), '@demo/pkg')
 
     const webDir = join(root, 'web')
     mkdirSync(webDir)
@@ -172,7 +163,6 @@ export function runVerifyRuntimeChecks() {
     mkdirSync(cordisDir)
     writeFileSync(join(cordisDir, 'cordis.yml'), '[]')
     assert.equal(detectPluginStructure(cordisDir), 'cordis.yml')
-    assert.equal(listKeyFor(cordisDir, 'directory'), 'cordis', 'no package.json -> basename')
 
     const skillsDir = join(root, 'sk')
     mkdirSync(join(skillsDir, 'skills'), { recursive: true })
@@ -299,7 +289,7 @@ const name = args.includes('--profile') ? args[args.indexOf('--profile') + 1] : 
 const dir = path.join(process.env.DSH_HOME, 'profiles', name), file = path.join(dir, 'package.json');
 function init() {
   fs.mkdirSync(dir, { recursive: true });
-  if (!fs.existsSync(file)) fs.writeFileSync(file, JSON.stringify({name: 'native-' + name, private: true, dependencies: {}, dsh: {profile: {bundles: name === 'headless' && mode !== 'missing-runner' ? ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-headless'] : name === 'web' ? ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app'] : ['@deepseek-ai/dsh-base'], patchReload: name === 'headless' ? 'startup' : 'live'}}}));
+  if (!fs.existsSync(file)) fs.writeFileSync(file, JSON.stringify({name: 'native-' + name, private: true, dependencies: {}, dsh: {profile: {name, identity: {owner: name}, unknownField: 'keep-' + name, bundles: name === 'headless' && mode !== 'missing-runner' ? ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-headless'] : name === 'web' ? ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app'] : ['@deepseek-ai/dsh-base'], ...(mode === 'no-patch-reload' ? {} : {patchReload: name === 'headless' ? 'startup' : 'live'})}}}));
 }
 if (args[0] === 'plugin' && args.includes('install')) {
   if (mode === 'bootstrap-failure') { console.error('native initialization failed'); process.exit(1); }
@@ -318,13 +308,20 @@ if (args[0] === 'plugin' && args.includes('add')) {
   const local = fs.existsSync(spec), git = spec.replace(/^git\\+/, '').startsWith('http');
   const pkg = local ? JSON.parse(fs.readFileSync(path.join(spec, 'package.json'), 'utf8')) : { name: git ? '@demo/git-package' : spec.slice(0, spec.lastIndexOf('@')), version: mode === 'wrong-version' ? '9.9.9' : '1.2.3', dsh: { bundle: { patch: './cordis.patch.yml' } } };
   const manifest = JSON.parse(fs.readFileSync(file, 'utf8'));
-  manifest.dependencies[pkg.name] = local ? 'link:' + spec : git ? (mode === 'wrong-git-source' ? 'github:other/repository' : 'github:demo/repository') : '^1.2.3';
+  manifest.dependencies[pkg.name] = local ? 'link:' + spec : git ? (mode === 'wrong-git-source' ? 'github:other/repository' : 'github:demo/repository' + (mode === 'wrong-git-ref' ? '#other' : spec.includes('#') ? spec.slice(spec.indexOf('#')) : '')) : '^1.2.3';
   if (mode !== 'not-enabled' && mode !== 'plain-dependency') manifest.dsh.profile.bundles.push(pkg.name);
   fs.writeFileSync(file, JSON.stringify(manifest));
   const target = path.join(dir, 'node_modules', pkg.name);
   fs.mkdirSync(path.dirname(target), { recursive: true });
   if (mode === 'manifest-only') process.exit(0);
   if (mode === 'broken-link') { fs.symlinkSync(path.join(dir, 'missing'), target); process.exit(0); }
+  if (mode === 'shared-git-store') {
+    const stored = path.join(path.dirname(process.env.VERIFY_FIXTURE_LOG), 'shared-store', pkg.name);
+    fs.mkdirSync(stored, { recursive: true });
+    fs.writeFileSync(path.join(stored, 'package.json'), JSON.stringify(pkg));
+    fs.symlinkSync(stored, target);
+    process.exit(0);
+  }
   if (local && mode !== 'stale-source') fs.symlinkSync(spec, target);
   else {
     fs.mkdirSync(target, { recursive: true });
@@ -391,7 +388,32 @@ console.error('TRANSPORT ECONNREFUSED 127.0.0.1:9'); process.exit(1);
     assert.equal(run(alias, 'valid').child.status, 0, 'symlinked source is copied without changing its identity')
     const kept = run(plugin, 'valid', ['--keep-workspace'])
     assert(existsSync(kept.result.workspace), 'explicit keep retains the owned home')
+    const keptManifest = JSON.parse(readFileSync(join(kept.result.workspace, '.dsh', 'profiles', 'verify', 'package.json'), 'utf8'))
+    assert.equal(keptManifest.name, 'native-verify', 'native package identity survives headless bootstrap')
+    assert.deepEqual(keptManifest.dsh.profile, {
+      name: 'verify', identity: { owner: 'verify' }, unknownField: 'keep-verify', patchReload: 'startup',
+      bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-headless', '@demo/source-check'],
+    }, 'bootstrap takes only the required runner and reload settings, preserving profile identity and unknown fields')
     rmSync(kept.result.workspace, { recursive: true, force: true })
+    const modern = run(plugin, 'no-patch-reload', ['--keep-workspace'])
+    assert.equal(modern.child.status, 0, 'newer templates need no legacy patchReload field')
+    const modernProfile = JSON.parse(readFileSync(join(modern.result.workspace, '.dsh', 'profiles', 'verify', 'package.json'), 'utf8')).dsh.profile
+    assert.equal(Object.hasOwn(modernProfile, 'patchReload'), false, 'bootstrap does not invent a retired field')
+    assert.equal(modernProfile.unknownField, 'keep-verify')
+    rmSync(modern.result.workspace, { recursive: true, force: true })
+    assert.equal(run('https://github.com/demo/repository.git#requested', 'shared-git-store').child.status, 0,
+      'Git installation may resolve into a shared store outside the profile')
+    assert.equal(run('https://github.com/demo/repository.git#requested', 'wrong-git-ref').result.verdict, 'not-listed-after-install',
+      'allowing external stores must retain requested Git ref validation')
+    const collision = join(bin, 'node_modules', '@demo', 'source-check')
+    mkdirSync(collision, { recursive: true })
+    writeFileSync(join(collision, 'package.json'), before)
+    const shadow = run(plugin, 'valid')
+    assert.equal(shadow.child.status, 2, 'another CLI-owned bundle copy remains inconclusive')
+    assert.equal(shadow.result.verdict, 'bundle-resolution-shadow')
+    assert.equal(shadow.commands.some(command => command.args.includes('ok') || command.args[0] === 'web'), false,
+      'a bundle collision never reaches boot')
+    rmSync(collision, { recursive: true })
     const web = JSON.parse(before)
     web.dsh.client = { platform: 'web' }
     writeFileSync(join(plugin, 'package.json'), JSON.stringify(web))

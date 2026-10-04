@@ -24,7 +24,7 @@
 import { spawnSync } from 'node:child_process'
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { basename, dirname, join, sep } from 'node:path'
+import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 // --- Signature regexes (priority order; see diagnoseBootLog) ----------------
@@ -160,29 +160,6 @@ export function classifySpec(spec) {
   return 'unknown'
 }
 
-/** The key expected to appear in `dsh plugin list` output after install.
- * npm-name: the package name itself. git-url: the repo name without ".git"
- * (the list never shows the full URL). directory: the package name from
- * package.json, or the ORIGINAL directory name (not the temp copy — the copy
- * is always named plugin-src, which would collide across runs). */
-export function listKeyFor(spec, route, originalSpec = spec) {
-  if (route === 'npm-name') return spec
-  if (route === 'git-url') {
-    const pathPart = spec.replace(/^[a-z]+:\/\/[^/]+\//i, '').replace(/^git@[^:]+:/, '')
-    return pathPart.replace(/\.git$/, '').split('/').pop() || spec
-  }
-  const pkgPath = join(originalSpec, 'package.json')
-  if (existsSync(pkgPath)) {
-    try {
-      const name = JSON.parse(readFileSync(pkgPath, 'utf8'))?.name
-      if (name) return name
-    } catch {
-      /* fall through to basename */
-    }
-  }
-  return basename(originalSpec)
-}
-
 /** Locate a package with the requested name in the actual dsh executable's
  * node_modules ancestry. This is only a collision signal: the public CLI does
  * not expose its bundle loader's resolved path, so a different profile copy
@@ -293,7 +270,10 @@ function prepareProfile(dshHome, profile, cwd) {
       if (template.status !== 0) return template
       const defaults = JSON.parse(readFileSync(join(dshHome, 'profiles', 'headless', 'package.json'), 'utf8'))
       if (!defaults?.dsh?.profile?.bundles?.includes('@deepseek-ai/dsh-headless')) throw new Error('headless template has no runner')
-      manifest.dsh.profile = defaults.dsh.profile
+      manifest.dsh.profile.bundles = [...defaults.dsh.profile.bundles]
+      // Older launchers otherwise re-enable HMR for live custom profiles,
+      // even though the probe disables its composition entry.
+      if (defaults.dsh.profile.patchReload !== undefined) manifest.dsh.profile.patchReload = defaults.dsh.profile.patchReload
       writeFileSync(file, `${JSON.stringify(manifest, null, 2)}\n`)
     }
     return { status: 0, stdout: '', stderr: '' }
@@ -338,7 +318,6 @@ function installedPlugin(profileDir, route, spec, originalSpec, pin = {}) {
     if (!statSync(directory).isDirectory()) return { error: 'installed package is not a directory' }
     const target = realpathSync(directory)
     if (route === 'directory' && target !== realpathSync(spec)) return { error: 'installed link does not point at the verification copy' }
-    if (route === 'git-url' && !target.startsWith(`${realpathSync(profileDir)}${sep}`)) return { error: 'git package resolves outside the installed profile' }
     const pkg = JSON.parse(readFileSync(join(directory, 'package.json'), 'utf8'))
     if (pkg.name !== name || (pin.pinned && pkg.version !== pin.version)) return { error: 'installed package identity does not match the request' }
     const patch = pkg?.dsh?.bundle?.patch
@@ -490,11 +469,10 @@ export async function verifyRuntime(rawSpec, options = {}) {
     const dshEnv = { DSH_HOME: dshHome }
 
     let spec = rawSpec
-    let originalSpec = rawSpec // for list keys: the temp copy is always plugin-src
+    let originalSpec = rawSpec // retain the source identity separately from its verification copy
     let webPlugin = false
     if (route === 'directory') {
-      // Expand ~ BEFORE using the path for package.json reads — an unexpanded
-      // "~/..." makes listKeyFor fall back to the wrong basename.
+      // Expand ~ before source package.json reads and copying the directory.
       originalSpec = rawSpec.startsWith('~/') ? join(process.env.HOME ?? '', rawSpec.slice(2)) : rawSpec
       const structure = detectPluginStructure(originalSpec)
       if (!structure) {
@@ -555,8 +533,7 @@ export async function verifyRuntime(rawSpec, options = {}) {
       return result
     }
 
-    // ---- L2: listed (key computed from the ORIGINAL spec — the temp copy
-    // is always named plugin-src and would collide across runs) ------------
+    // ---- L2: native listing plus installed dependency identity ------------
     t0 = Date.now()
     const list = run('dsh', ['plugin', '--profile', profile, 'list', '-w'], { timeoutSeconds: 60, env: dshEnv, cwd: home })
     const l2Ms = Date.now() - t0
