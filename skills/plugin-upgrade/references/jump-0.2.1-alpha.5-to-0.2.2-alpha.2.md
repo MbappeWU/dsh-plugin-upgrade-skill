@@ -29,6 +29,14 @@ verifiedAt: 2026-10-28
 > [v0.2.2-alpha.2.md](v0.2.2-alpha.2.md) (DSH-0.2.2-A2). Card IDs here use the `DSH-0.2.2-J1`
 > prefix. This file is schema-validated as `kind: dsh-version-jump-card-set` but is not a
 > corridor edge: `plan-migration.mjs` builds corridors only from the per-edge `v*.md` files.
+>
+> **Coverage gap — read first**: the six cards below are drawn from release notes, npm pack diffs, and a
+> fleet sweep. The `dsh-v0.2.2-alpha.2` tree also ships 34 official upgrade guides for this window that are
+> not carded yet — several breaking (Node.js 24.9 floor, bundle lists moved to
+> `@deepseek-ai/dsh-official-bundles`, executor plugins, the `webserver/index-inject` Peer argument). They
+> are listed in [v0.2.2-alpha.2.md](v0.2.2-alpha.2.md#coverage-gap--upstream-upgrade-guides-not-yet-carded);
+> read them before migrating. The window also nets in [DSH-0.2.1-R2-03](v0.2.1-rc.3.md) (New Session reuses
+> blank Sessions again) and [DSH-0.2.1-R3-01](v0.2.1-rc.4.md)'s ACP stdout fix.
 
 ## Contents
 
@@ -36,8 +44,8 @@ verifiedAt: 2026-10-28
 - DSH-0.2.2-J1-02 · capability: the plugin lifecycle is now dependency-aware end to end — sync, hot-apply, third-party updates with rollback
 - DSH-0.2.2-J1-03 · capability: model and web surfaces — DeepSeek-V4.1-Flash-1017 native adapter; opt-in DeepSeek Search & Fetch providers
 - DSH-0.2.2-J1-04 · capability: in-app plugin discovery grows into rich-text detail pages — README is now first-class UI
-- DSH-0.2.2-J1-05 · capability: a wholly new Web Client bundle — mobile/narrow overhaul, composer quoting, draft retention; zero slot/service/event changes
-- DSH-0.2.2-J1-06 · verification: rc.4 was a pure synchronization release; the six-plugin fleet crossed the whole window zero-adaptation
+- DSH-0.2.2-J1-05 · capability: a wholly new Web Client bundle — mobile/narrow overhaul, composer quoting, draft retention
+- DSH-0.2.2-J1-06 · verification: rc.4 was a synchronization release; the six-plugin fleet crossed the window zero-adaptation on its own surfaces
 
 ---
 
@@ -45,7 +53,7 @@ verifiedAt: 2026-10-28
 
 - **Type**: breaking
 - **Applies to**: every plugin installed on a deployment jumping this window — the enforcement that arrived in 0.1.7-rc.1 keeps operating at install and startup; a ledger row ending at `0.2.1-alpha.5` (or any rc) is refused against a `0.2.2-alpha.2` host
-- **Touchpoints**: #0 (install/boot gate), #1 (compatibility ledger ownership)
+- **Touchpoints**: none (install/boot gate — compatibility ledger)
 - **Action level**: required
 - **Symptoms**:
   - Plugins whose `compatibility.json` dsh list stops before `0.2.2-alpha.2` are denied at install and disabled at startup on the new host, with the denial still visible in `--dump-config`.
@@ -60,7 +68,7 @@ verifiedAt: 2026-10-28
 
 - **Type**: capability
 - **Applies to**: every plugin — enable/disable/uninstall/update resolve the dependency graph (rc.1), and the manager can now update third-party packages with old-version recovery when a hot-apply fails (0.2.2-alpha.2)
-- **Touchpoints**: #0 (install/update surface), #5 (plugin detail page)
+- **Touchpoints**: #5 (plugin detail page); install/update surface otherwise
 - **Action level**: optional
 - **Symptoms**:
   - Lifecycle operations sync dependencies; stale mappings clear on uninstall; updates hot-apply where replaceable (R1-01), extended by the 0.2.2 update pipeline behind new `build-approval`/`bundle-detail`/`git-transport`/`versions` API files (A2-01).
@@ -87,7 +95,7 @@ verifiedAt: 2026-10-28
 
 - **Type**: capability
 - **Applies to**: every published plugin — 「更多」 menus surface browsing/creation in the sidebar and conversation views (rc.3), and the plugin manager renders README as a rich detail page (0.2.2)
-- **Touchpoints**: #0 (discovery surface), #5 (detail page content)
+- **Touchpoints**: #5 (detail page content); discovery surface otherwise
 - **Action level**: optional
 - **Symptoms**:
   - Discovery menus render existing registry/marketplace metadata; the 0.2.2 manager extends the same surface with README rendering (R2-02 → A2-01).
@@ -96,28 +104,28 @@ verifiedAt: 2026-10-28
 - **Verification**: open each 「更多」 entry and the plugin detail page; confirm names/icons/descriptions read well.
 - **Source**: primary — [dsh-v0.2.1-rc.3 release notes](https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.2.1-rc.3)（「更多」菜单条目）; per-edge records: [v0.2.1-rc.3.md](v0.2.1-rc.3.md) (R2-02), [v0.2.2-alpha.2.md](v0.2.2-alpha.2.md) (A2-01).
 
-### DSH-0.2.2-J1-05 · capability: a wholly new Web Client bundle — mobile/narrow overhaul, composer quoting, draft retention; zero slot/service/event changes
+### DSH-0.2.2-J1-05 · capability: a wholly new Web Client bundle — mobile/narrow overhaul, composer quoting, draft retention
 
 - **Type**: capability
 - **Applies to**: plugins contributing UI — the whole shell is restyled for touch/narrow screens; the composer gains quoting with compact previews and read-only sends that preserve drafts (including quotes and attachments) on failure
-- **Touchpoints**: #5 (Web Client seat), #9 (none — no plugin-facing API moved)
+- **Touchpoints**: #5 (Web Client seat)
 - **Action level**: informational
 - **Symptoms**:
-  - `dsh-web-frontend` ships an entirely new asset bundle in 0.2.2-alpha.2 (A2-02); host-internal fixes along the window include unsent-draft retention across session switches (rc.3) and message display only after host acknowledgment.
-  - No slot, service, or event contract changed anywhere in this window — verified by the fleet sweep (A2-03).
+  - `dsh-web-frontend` ships an entirely new asset bundle in 0.2.2-alpha.2 (A2-02); along the window New Session reuses the Workspace's blank Session again, which retains unsent drafts across session switches (rc.3, R2-03) and message display only after host acknowledgment.
+  - The fleet sweep (A2-03) found every slot, service, and remote API **the fleet uses** intact; that is not a whole-window claim — client API changes such as `file-drag-callbacks` and `model-badge-package-removal`, and the `webserver/index-inject` event change, are in the coverage-gap list.
 - **Migration recipe**:
   1. None. Spot-check contributed panels once at narrow width; the host now exercises narrow screens far more.
 - **Verification**: run a session in a narrow window; confirm contributed entries stay reachable and legible.
-- **Source**: primary — [dsh-v0.2.2-alpha.2 release notes](https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.2.2-alpha.2)（移动端与 composer 条目）; per-edge records: [v0.2.2-alpha.2.md](v0.2.2-alpha.2.md) (A2-02), [v0.2.1-rc.3.md](v0.2.1-rc.3.md) (R2-03 host-internal fixes).
+- **Source**: primary — [dsh-v0.2.2-alpha.2 release notes](https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.2.2-alpha.2)（移动端与 composer 条目）; per-edge records: [v0.2.2-alpha.2.md](v0.2.2-alpha.2.md) (A2-02), [v0.2.1-rc.3.md](v0.2.1-rc.3.md) (R2-03 New Session blank reuse).
 
-### DSH-0.2.2-J1-06 · verification: rc.4 was a pure synchronization release; the six-plugin fleet crossed the whole window zero-adaptation
+### DSH-0.2.2-J1-06 · verification: rc.4 was a synchronization release; the six-plugin fleet crossed the window zero-adaptation on its own surfaces
 
 - **Type**: fix
 - **Applies to**: the maintained fleet and any plugin doing its own sweep before declaring compatibility
-- **Touchpoints**: #0–#9 (verification card)
+- **Touchpoints**: none (fleet verification record)
 - **Action level**: informational
 - **Symptoms**:
-  - rc.4 re-versioned all 83 workspace packages with a byte-identical CLI `lib/` and zero plugin-facing changes (R3-01); the 0.2.2-alpha.2 contract sweep found every fleet slot, optional service (`uiSession`/`inputTriggers`/`jobs`), and session-remote API alive (A2-03).
+  - rc.4 re-versioned all 83 workspace packages with a byte-identical CLI `lib/` and only an ACP stdout fix (R3-01); the 0.2.2-alpha.2 contract sweep found every fleet slot, optional service (`uiSession`/`inputTriggers`/`jobs`), and session-remote API alive (A2-03).
   - The sweep corpus lesson: the slot catalog lives in the host-side `dsh-cordis-client-runner`, not the frontend shell — scanning the shell reads every marker as GONE.
 - **Migration recipe**:
   1. For your own sweep, scan the installed runtime's `dsh-cordis-client-runner/lib` plus the API provider packages, not the frontend assets.
